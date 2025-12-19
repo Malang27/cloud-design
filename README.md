@@ -1,915 +1,380 @@
-# Orchestrator - Kubernetes Microservices Deployment
+# 🚀 Cloud Design - Microservices sur AWS
 
-A complete Kubernetes (K3s) deployment solution for a microservices architecture with auto-scaling, persistent storage, and high availability.
+**Projet**: Déploiement de microservices sur AWS avec EKS, RDS, et Amazon MQ
+**Infrastructure**: Amazon Web Services (AWS)
+**IaC**: Terraform
+**Orchestration**: Amazon EKS (Elastic Kubernetes Service)
 
-## Table of Contents
+---
 
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Project Structure](#project-structure)
-- [Configuration](#configuration)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Testing](#testing)
-- [Monitoring](#monitoring)
-- [Troubleshooting](#troubleshooting)
-- [Kubernetes Concepts](#kubernetes-concepts)
-- [Security](#security)
-- [Contributing](#contributing)
+## 📋 Vue d'ensemble
 
-## Overview
+Application microservices complète déployée sur AWS avec:
+- **Amazon EKS** - Kubernetes managé
+- **RDS PostgreSQL** - 2 databases Multi-AZ (inventory + billing)
+- **Amazon MQ** - RabbitMQ managé pour messaging
+- **ALB** - Application Load Balancer avec HTTPS
+- **Cognito** - Authentication managée
+- **CloudWatch** - Monitoring et logging
+- **Auto-Scaling** - HPA + Cluster Autoscaler + KEDA
 
-This project deploys a complete microservices architecture on a K3s Kubernetes cluster using:
+---
 
-- **K3s**: Lightweight Kubernetes distribution
-- **Vagrant**: Infrastructure provisioning (2 VMs: master + agent)
-- **Docker**: Container runtime
-- **Kubernetes Manifests**: Infrastructure as Code (IaC)
-
-### Services Deployed
-
-| Service | Type | Port | Auto-scaling | Replicas |
-|---------|------|------|--------------|----------|
-| **inventory-db** | StatefulSet | 5432 | No | 1 |
-| **billing-db** | StatefulSet | 5432 | No | 1 |
-| **inventory-app** | Deployment | 8080 | Yes (1-3) | 1-3 |
-| **billing-app** | StatefulSet | 8080 | No | 1 |
-| **rabbitmq** | Deployment | 5672 | No | 1 |
-| **api-gateway** | Deployment | 3000 | Yes (1-3) | 1-3 |
-
-## Architecture
+## 🏗️ Architecture
 
 ```
-                     ┌─────────────────┐
-                     │  API Gateway    │  ← NodePort 30000
-                     │  (Deployment)   │     (External Access)
-                     └────────┬────────┘
-                              │
-                 ┌────────────┴────────────┐
-                 │                         │
-        ┌────────▼────────┐       ┌───────▼────────┐
-        │  Inventory App  │       │  Billing App   │
-        │  (Deployment)   │       │  (StatefulSet) │
-        │  HPA: 1-3       │       │  Replicas: 1   │
-        └────────┬────────┘       └───────┬────────┘
-                 │                        │
-      ┌──────────▼──────────┐    ┌────────▼────────┐
-      │  Inventory DB       │    │  Billing DB     │
-      │  (StatefulSet)      │    │  (StatefulSet)  │
-      │  PVC: 1Gi           │    │  PVC: 1Gi       │
-      └─────────────────────┘    └─────────────────┘
-                                         │
-                                  ┌──────▼──────┐
-                                  │  RabbitMQ   │
-                                  │ (Deployment)│
-                                  └─────────────┘
+                          Internet
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │  Route 53 (DNS) │
+                    │  + CloudFront   │
+                    └────────┬────────┘
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │   AWS ALB       │
+                    │   (HTTPS)       │
+                    └────────┬────────┘
+                             │
+                   ┌─────────┴─────────┐
+                   │                   │
+                   ▼                   ▼
+        ┌──────────────────┐ ┌──────────────────┐
+        │   AZ 1           │ │   AZ 2           │
+        │                  │ │                  │
+        │  ┌────────────┐  │ │  ┌────────────┐  │
+        │  │  EKS Nodes │  │ │  │  EKS Nodes │  │
+        │  │            │  │ │  │            │  │
+        │  │ API Gateway│  │ │  │ API Gateway│  │
+        │  │ Inventory  │  │ │  │ Inventory  │  │
+        │  │ Billing    │  │ │  │ Billing    │  │
+        │  └────────────┘  │ │  └────────────┘  │
+        └──────────────────┘ └──────────────────┘
+                   │                   │
+                   ▼                   ▼
+        ┌──────────────────────────────────────┐
+        │      Amazon MQ (RabbitMQ)            │
+        │         Multi-AZ Cluster             │
+        └──────────────────────────────────────┘
+                   │                   │
+                   ▼                   ▼
+        ┌──────────────┐       ┌──────────────┐
+        │ RDS PostgreSQL│       │ RDS PostgreSQL│
+        │  Inventory DB │       │  Billing DB  │
+        │   Multi-AZ    │       │   Multi-AZ   │
+        └──────────────┘       └──────────────┘
 ```
 
-### Network Architecture
+---
 
-- **Master Node**: 192.168.56.110
-- **Agent Node**: 192.168.56.111
-- **API Gateway External Access**: http://192.168.56.110:30000
-- **Pod Network**: 10.42.0.0/16
-- **Service Network**: 10.43.0.0/16
+## 🚀 Quick Start
 
-## Prerequisites
+### Prérequis
 
-### Required Software
+- **AWS CLI** >= 2.x ([Installation](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html))
+- **Terraform** >= 1.6.0 ([Installation](https://learn.hashicorp.com/tutorials/terraform/install-cli))
+- **kubectl** >= 1.28 ([Installation](https://kubernetes.io/docs/tasks/tools/))
+- **Docker Desktop** ([Installation](https://www.docker.com/products/docker-desktop))
+- **Helm** >= 3.x ([Installation](https://helm.sh/docs/intro/install/))
 
-| Software | Version | Purpose |
-|----------|---------|---------|
-| **Vagrant** | 2.3+ | VM provisioning |
-| **VirtualBox** | 6.1+ | Virtualization |
-| **kubectl** | 1.28+ | Kubernetes CLI |
-| **Docker** | 20.10+ | Image building |
-
-### System Requirements
-
-- **RAM**: Minimum 6GB (4GB for VMs + 2GB for host)
-- **CPU**: 4+ cores recommended
-- **Disk**: 20GB free space
-- **OS**: Linux, macOS, or Windows with WSL2
-
-### Installation Commands
+### Installation rapide (5 minutes)
 
 ```bash
-# Ubuntu/Debian
-sudo apt-get update
-sudo apt-get install -y vagrant virtualbox kubectl docker.io
+# 1. Cloner le repository
+git clone https://github.com/your-org/cloud-design-aws.git
+cd cloud-design-aws
 
-# macOS (using Homebrew)
-brew install vagrant virtualbox kubectl docker
+# 2. Configurer AWS credentials
+aws configure
+# AWS Access Key ID: VOTRE_ACCESS_KEY
+# AWS Secret Access Key: VOTRE_SECRET_KEY
+# Default region: us-east-1
 
-# Windows (using Chocolatey)
-choco install vagrant virtualbox kubernetes-cli docker-desktop
-```
+# 3. Initialiser Terraform
+cd terraform
+terraform init
 
-### Verify Installation
+# 4. Déployer l'infrastructure (15-20 minutes)
+terraform plan
+terraform apply
 
-```bash
-vagrant --version
-vboxmanage --version
-kubectl version --client
-docker --version
-```
+# 5. Configurer kubectl pour EKS
+aws eks update-kubeconfig --name cloud-design-production --region us-east-1
 
-## Project Structure
-
-```
-orchestrator/
-├── Manifests/                    # Kubernetes manifests
-│   ├── secrets.yaml             # Credentials (passwords, tokens)
-│   ├── statefulsets/            # Stateful applications
-│   │   ├── inventory-db.yaml
-│   │   ├── billing-db.yaml
-│   │   └── billing-app.yaml
-│   ├── deployments/             # Stateless applications
-│   │   ├── inventory-app.yaml
-│   │   ├── api-gateway.yaml
-│   │   └── rabbitmq.yaml
-│   ├── services/                # Service definitions
-│   │   ├── inventory-db-service.yaml
-│   │   ├── billing-db-service.yaml
-│   │   ├── inventory-app-service.yaml
-│   │   ├── billing-app-service.yaml
-│   │   ├── rabbitmq-service.yaml
-│   │   └── api-gateway-service.yaml
-│   └── hpa/                     # Horizontal Pod Autoscalers
-│       ├── api-gateway-hpa.yaml
-│       └── inventory-app-hpa.yaml
-├── Scripts/                     # Automation scripts
-│   ├── orchestrator.sh          # Main orchestration script
-│   └── build-and-push.sh        # Docker build & push
-├── Dockerfiles/                 # Docker images
-│   ├── inventory-db/
-│   ├── billing-db/
-│   ├── rabbitmq/
-│   ├── inventory-app/
-│   ├── billing-app/
-│   └── api-gateway/
-├── Vagrantfile                  # VM configuration
-└── README.md                    # This file
-```
-
-## Configuration
-
-### 1. Docker Hub Setup
-
-Create a Docker Hub account if you don't have one:
-https://hub.docker.com/signup
-
-### 2. Build and Push Docker Images
-
-```bash
-# Build all images and push to Docker Hub
-cd Scripts/
-./build-and-push.sh <your-dockerhub-username>
-
-# Example:
-./build-and-push.sh johndoe
-```
-
-### 3. Update Kubernetes Manifests
-
-After pushing images, update the manifests with your Docker Hub username:
-
-```bash
-# Automated update (Linux/macOS)
-find Manifests/ -type f -name '*.yaml' -exec sed -i 's/<YOUR_DOCKERHUB_USERNAME>/johndoe/g' {} +
-
-# On macOS (BSD sed)
-find Manifests/ -type f -name '*.yaml' -exec sed -i '' 's/<YOUR_DOCKERHUB_USERNAME>/johndoe/g' {} +
-
-# Manual update
-# Edit each */*.yaml file and replace <YOUR_DOCKERHUB_USERNAME> with your username
-```
-
-### 4. Customize Secrets (Optional)
-
-Edit `Manifests/secrets.yaml` to change default passwords:
-
-```yaml
-stringData:
-  INVENTORY_DB_PASSWORD: your_secure_password_here
-  BILLING_DB_PASSWORD: your_secure_password_here
-  RABBITMQ_PASSWORD: your_secure_password_here
-```
-
-**Important**: Never commit real passwords to Git!
-
-## Installation
-
-### Quick Start
-
-```bash
-# 1. Clone the repository
-git clone <repository-url>
-cd orchestrator
-
-# 2. Build and push Docker images
-./Scripts/build-and-push.sh <your-dockerhub-username>
-
-# 3. Update manifests with your Docker Hub username
-find Manifests/ -type f -name '*.yaml' -exec sed -i 's/<YOUR_DOCKERHUB_USERNAME>/yourusername/g' {} +
-
-# 4. Create and deploy the cluster
-./Scripts/orchestrator.sh create
-```
-
-This will:
-1. Start 2 Vagrant VMs (master + agent)
-2. Install K3s on both nodes
-3. Deploy all microservices
-4. Configure auto-scaling (HPA)
-5. Setup persistent volumes
-
-### Step-by-Step Installation
-
-#### Step 1: Start the K3s Cluster
-
-```bash
-vagrant up
-```
-
-This takes approximately 5-10 minutes.
-
-#### Step 2: Verify Cluster Status
-
-```bash
-# Set KUBECONFIG
-export KUBECONFIG=$(pwd)/.kube/config
-
-# Check nodes
+# 6. Vérifier le cluster
 kubectl get nodes
+kubectl get pods --all-namespaces
 
-# Expected output:
-# NAME         STATUS   ROLES                  AGE   VERSION
-# k3s-master   Ready    control-plane,master   5m    v1.28.5+k3s1
-# k3s-agent    Ready    <none>                 4m    v1.28.5+k3s1
+# 7. Déployer les applications
+cd ../kubernetes
+kubectl apply -f manifests/
+
+# 8. Attendre que tous les pods soient Running
+kubectl wait --for=condition=ready pod --all --timeout=300s
+
+# 9. Obtenir l'URL de l'ALB
+kubectl get ingress
 ```
 
-#### Step 3: Deploy Applications
+---
+
+## 📊 Composants de l'infrastructure
+
+| Composant | Type | Quantité | Coût mensuel |
+|-----------|------|----------|--------------|
+| **EKS Cluster** | Control Plane | 1 | $0 (Free Tier 1 an) |
+| **EKS Nodes** | t3.medium | 3-10 (auto-scale) | $45-150 |
+| **RDS Inventory** | db.t3.micro Multi-AZ | 1 | $27 |
+| **RDS Billing** | db.t3.micro Multi-AZ | 1 | $27 |
+| **Amazon MQ** | mq.t3.micro Cluster | 1 | $32 |
+| **ALB** | Application Load Balancer | 1 | $16 |
+| **NAT Gateway** | Multi-AZ | 2 | $66 |
+| **S3 + CloudWatch** | Logs & Monitoring | - | $5-10 |
+| **TOTAL** | | | **~$218-300/mois** |
+
+**Optimisations possibles**: $150/mois avec Spot Instances, Reserved Instances, et VPC Endpoints
+
+---
+
+## 🔒 Sécurité
+
+✅ **Network Security**
+- VPC privé avec Security Groups restrictifs
+- Databases et RabbitMQ dans sous-réseaux privés
+- Pas d'accès Internet direct (NAT Gateway uniquement)
+
+✅ **Data Security**
+- Chiffrement at rest (KMS) pour RDS, EBS, S3
+- Chiffrement in transit (TLS/SSL) partout
+- Secrets dans AWS Secrets Manager avec rotation automatique
+
+✅ **Access Control**
+- IAM Roles avec principe du moindre privilège
+- IRSA (IAM Roles for Service Accounts)
+- Cognito pour authentication utilisateurs
+- MFA optionnel
+
+✅ **Monitoring & Audit**
+- GuardDuty pour détection de menaces
+- Security Hub pour conformité
+- CloudTrail pour audit de toutes les actions
+
+---
+
+## 📈 Auto-Scaling
+
+### Level 1: Horizontal Pod Autoscaler (HPA)
+- **API Gateway**: 2-10 replicas (CPU 70%, Memory 80%)
+- **Inventory App**: 1-5 replicas (CPU 75%)
+- **Billing App**: 1-10 replicas (RabbitMQ queue depth)
+
+### Level 2: Cluster Autoscaler
+- **EKS Nodes**: 2-10 nodes t3.medium
+- Scale up quand pods pending
+- Scale down après 10min sous 50% utilization
+
+### Level 3: RDS Auto Scaling
+- **Read Replicas**: 1-5 replicas
+- Scale basé sur CPU et connections
+
+---
+
+## 📊 Monitoring
+
+### CloudWatch
+- **Logs**: Tous les composants (EKS, RDS, ALB, Apps)
+- **Metrics**: CPU, Memory, Network, Custom metrics
+- **Alarms**: 15+ alarmes configurées
+- **Dashboard**: Vue d'ensemble temps réel
+
+### Prometheus + Grafana
+- Métriques Kubernetes détaillées
+- Dashboards custom pour chaque microservice
+- Alerting Manager pour notifications
+
+### AWS X-Ray
+- Distributed tracing
+- Analyse de latence end-to-end
+- Identification des bottlenecks
+
+---
+
+## 🛠️ Scripts utiles
 
 ```bash
-./Scripts/orchestrator.sh create
+# Déployer une nouvelle version
+./scripts/deploy.sh api-gateway v1.2.0
+
+# Scale manuellement
+./scripts/scale.sh api-gateway 10
+
+# Backup manuel RDS
+./scripts/backup-rds.sh inventory-db
+
+# Tests de charge
+./scripts/load-test.sh
+
+# Health check quotidien
+./scripts/daily-health-check.sh
+
+# Cleanup des ressources anciennes
+./scripts/cleanup.sh
 ```
 
-Or manually:
+---
+
+## 📚 Documentation
+
+- [**GETTING_STARTED.md**](docs/GETTING_STARTED.md) - Guide de démarrage détaillé
+- [**ARCHITECTURE.md**](docs/ARCHITECTURE.md) - Architecture complète
+- [**DEPLOYMENT.md**](docs/DEPLOYMENT.md) - Guide de déploiement
+- [**SECURITY.md**](docs/SECURITY.md) - Pratiques de sécurité
+- [**MONITORING.md**](docs/MONITORING.md) - Guide monitoring
+- [**TROUBLESHOOTING.md**](docs/TROUBLESHOOTING.md) - Résolution de problèmes
+- [**RUNBOOK.md**](docs/RUNBOOK.md) - Procédures opérationnelles
+- [**DISASTER_RECOVERY.md**](docs/DISASTER_RECOVERY.md) - Plan de reprise
+
+---
+
+## 🧪 Tests
 
 ```bash
-# Apply secrets
-kubectl apply -f Manifests/secrets.yaml
+# Unit tests
+npm test
 
-# Deploy databases (StatefulSets)
-kubectl apply -f Manifests/statefulsets/
+# Integration tests
+npm run test:integration
 
-# Deploy applications (Deployments)
-kubectl apply -f Manifests/deployments/
+# Load tests (k6)
+./scripts/load-test.sh
 
-# Create services
-kubectl apply -f Manifests/services/
-
-# Enable auto-scaling
-kubectl apply -f Manifests/hpa/
+# Security scan (Trivy)
+./scripts/security-scan.sh
 ```
 
-#### Step 4: Verify Deployment
+---
 
-```bash
-# Check all resources
-kubectl get all
+## 🗂️ Structure du projet
 
-# Check pods
-kubectl get pods
-
-# Check services
-kubectl get services
-
-# Check HPA
-kubectl get hpa
+```
+cloud-design-aws/
+├── terraform/                      # Infrastructure as Code
+│   ├── main.tf                     # Configuration principale
+│   ├── variables.tf                # Variables
+│   ├── outputs.tf                  # Outputs
+│   ├── backend.tf                  # S3 backend
+│   ├── modules/                    # Modules réutilisables
+│   │   ├── vpc/                    # VPC + Subnets
+│   │   ├── eks/                    # EKS Cluster
+│   │   ├── rds/                    # RDS PostgreSQL
+│   │   ├── mq/                     # Amazon MQ
+│   │   ├── alb/                    # Application Load Balancer
+│   │   ├── cognito/                # Cognito User Pool
+│   │   └── monitoring/             # CloudWatch + Alarms
+│   └── environments/               # Configurations par environnement
+│       ├── dev/
+│       ├── staging/
+│       └── production/
+├── kubernetes/                     # Manifests Kubernetes
+│   └── manifests/
+│       ├── deployments/            # Deployments
+│       ├── services/               # Services
+│       ├── configmaps/             # ConfigMaps
+│       ├── secrets/                # ExternalSecrets
+│       ├── hpa/                    # HorizontalPodAutoscalers
+│       ├── ingress/                # Ingress
+│       └── network-policies/       # NetworkPolicies
+├── apps/                           # Applications
+│   ├── api-gateway/                # API Gateway
+│   │   ├── Dockerfile
+│   │   ├── src/
+│   │   └── package.json
+│   ├── inventory-app/              # Inventory App
+│   │   ├── Dockerfile
+│   │   ├── src/
+│   │   └── package.json
+│   └── billing-app/                # Billing App
+│       ├── Dockerfile
+│       ├── src/
+│       └── package.json
+├── scripts/                        # Scripts utilitaires
+│   ├── deploy.sh
+│   ├── scale.sh
+│   ├── backup-rds.sh
+│   ├── load-test.sh
+│   └── cleanup.sh
+├── docs/                           # Documentation
+│   ├── ARCHITECTURE.md
+│   ├── DEPLOYMENT.md
+│   ├── SECURITY.md
+│   └── RUNBOOK.md
+├── .github/workflows/              # CI/CD GitHub Actions
+│   └── deploy.yml
+├── .gitignore
+└── README.md
 ```
 
-## Usage
+---
 
-### Orchestrator Script Commands
+## 🚨 Troubleshooting
 
+### Pods en CrashLoopBackOff
 ```bash
-# Create cluster and deploy applications
-./Scripts/orchestrator.sh create
-
-# Start existing cluster
-./Scripts/orchestrator.sh start
-
-# Stop cluster (keep VMs)
-./Scripts/orchestrator.sh stop
-
-# Delete everything
-./Scripts/orchestrator.sh delete
-
-# Check cluster status
-./Scripts/orchestrator.sh status
-```
-
-### Accessing Services
-
-#### API Gateway (External Access)
-
-```bash
-# Get node IP
-kubectl get nodes -o wide
-
-# Access API Gateway
-curl http://192.168.56.110:30000/health
-
-# Or use the NodePort
-curl http://192.168.56.110:30000/api/movies
-```
-
-#### Internal Service Access (from within cluster)
-
-```bash
-# SSH to master node
-vagrant ssh k3s-master
-
-# Access services by DNS
-curl http://inventory-app.default.svc.cluster.local:8080/health
-curl http://billing-app.default.svc.cluster.local:8080/health
-curl http://api-gateway.default.svc.cluster.local:3000/health
-```
-
-### kubectl Common Commands
-
-```bash
-# Get all resources
-kubectl get all
-
-# Get pods with details
-kubectl get pods -o wide
-
-# Get specific resource
-kubectl get deployment inventory-app
-
-# Describe resource
-kubectl describe pod <pod-name>
-
-# View logs
 kubectl logs <pod-name>
-
-# Follow logs
-kubectl logs -f <pod-name>
-
-# Execute command in pod
-kubectl exec -it <pod-name> -- /bin/sh
-
-# Port forwarding (local access)
-kubectl port-forward service/api-gateway 3000:3000
-
-# Scale manually (overrides HPA temporarily)
-kubectl scale deployment inventory-app --replicas=2
-```
-
-## Testing
-
-### API Testing
-
-#### 1. Create a Movie (POST)
-
-```bash
-curl -X POST http://192.168.56.110:30000/api/movies \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Inception",
-    "description": "A mind-bending thriller"
-  }'
-
-# Expected: 200 OK
-```
-
-#### 2. List Movies (GET)
-
-```bash
-curl http://192.168.56.110:30000/api/movies
-
-# Expected: JSON array with movies
-```
-
-#### 3. Create Billing Order (POST)
-
-```bash
-curl -X POST http://192.168.56.110:30000/api/billing \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": "123",
-    "number_of_items": "5",
-    "total_amount": "99.99"
-  }'
-
-# Expected: 200 OK
-```
-
-### RabbitMQ Resilience Test
-
-Test that messages are queued even when billing-app is down:
-
-```bash
-# 1. Stop billing-app
-kubectl scale statefulset billing-app --replicas=0
-
-# 2. Send billing request (should succeed)
-curl -X POST http://192.168.56.110:30000/api/billing \
-  -H "Content-Type: application/json" \
-  -d '{"user_id": "999", "number_of_items": "10", "total_amount": "250"}'
-
-# 3. Restart billing-app
-kubectl scale statefulset billing-app --replicas=1
-
-# 4. Wait for pod to be ready
-kubectl wait --for=condition=ready pod -l app=billing-app --timeout=120s
-
-# 5. Check database - order should be processed
-kubectl exec -it billing-db-0 -- psql -U billing_user -d orders -c "SELECT * FROM orders WHERE user_id='999';"
-```
-
-### Auto-Scaling Test
-
-Test HPA (Horizontal Pod Autoscaler):
-
-```bash
-# 1. Check current HPA status
-kubectl get hpa
-
-# 2. Generate load (install hey or ab)
-hey -z 60s -c 50 http://192.168.56.110:30000/api/movies
-
-# 3. Watch HPA scale up
-kubectl get hpa -w
-
-# 4. Watch pods scale
-kubectl get pods -w
-
-# Should scale from 1 to 2-3 replicas when CPU > 60%
-```
-
-### Database Persistence Test
-
-Test that data survives pod restarts:
-
-```bash
-# 1. Create a movie
-curl -X POST http://192.168.56.110:30000/api/movies \
-  -H "Content-Type: application/json" \
-  -d '{"title": "Test Movie", "description": "Persistence test"}'
-
-# 2. Delete inventory-db pod
-kubectl delete pod inventory-db-0
-
-# 3. Wait for pod to restart
-kubectl wait --for=condition=ready pod/inventory-db-0 --timeout=180s
-
-# 4. Verify movie still exists
-curl http://192.168.56.110:30000/api/movies | grep "Test Movie"
-```
-
-## Monitoring
-
-### Cluster Health
-
-```bash
-# Node status
-kubectl get nodes
-
-# Resource usage
-kubectl top nodes
-kubectl top pods
-
-# Events
+kubectl describe pod <pod-name>
 kubectl get events --sort-by='.lastTimestamp'
-
-# Component status
-kubectl get componentstatuses
 ```
 
-### Application Logs
-
+### RDS connection issues
 ```bash
-# View logs
-kubectl logs -l app=api-gateway
-kubectl logs -l app=inventory-app
-kubectl logs -l app=billing-app
+# Vérifier Security Groups
+aws ec2 describe-security-groups --group-ids <sg-id>
 
-# Follow logs
-kubectl logs -f <pod-name>
-
-# Logs from all containers in pod
-kubectl logs <pod-name> --all-containers=true
-
-# Previous container logs (if crashed)
-kubectl logs <pod-name> --previous
+# Tester la connexion
+kubectl run -it --rm debug --image=postgres:15 --restart=Never -- psql -h <rds-endpoint> -U <user> -d <database>
 ```
 
-### Persistent Volumes
-
+### High costs
 ```bash
-# List PVCs
-kubectl get pvc
-
-# Describe PVC
-kubectl describe pvc postgres-data-inventory-db-0
-
-# Check PV
-kubectl get pv
-```
-
-## Troubleshooting
-
-### Common Issues
-
-#### Issue: Pods stuck in Pending
-
-```bash
-# Check events
-kubectl describe pod <pod-name>
-
-# Common causes:
-# - Insufficient resources
-# - PVC not bound
-# - Image pull errors
-```
-
-**Solution**:
-```bash
-# Check node resources
-kubectl describe nodes
-
-# Check PVC status
-kubectl get pvc
-
-# Check image name
-kubectl describe pod <pod-name> | grep Image
-```
-
-#### Issue: Pods CrashLoopBackOff
-
-```bash
-# View logs
-kubectl logs <pod-name>
-
-# Common causes:
-# - Application errors
-# - Missing environment variables
-# - Database not ready
-```
-
-**Solution**:
-```bash
-# Check environment variables
-kubectl exec <pod-name> -- env
-
-# Check secrets
-kubectl get secrets
-kubectl describe secret postgres-credentials
-
-# Restart pod
-kubectl delete pod <pod-name>
-```
-
-#### Issue: Services not accessible
-
-```bash
-# Check service
-kubectl get svc api-gateway
-
-# Check endpoints
-kubectl get endpoints api-gateway
-
-# Check pod labels
-kubectl get pods --show-labels
-```
-
-**Solution**:
-```bash
-# Ensure pod labels match service selector
-kubectl describe svc api-gateway
-kubectl describe pod <pod-name>
-```
-
-#### Issue: HPA not scaling
-
-```bash
-# Check metrics-server
-kubectl get deployment metrics-server -n kube-system
-
-# Check HPA status
-kubectl describe hpa api-gateway-hpa
-```
-
-**Solution**:
-```bash
-# In K3s, metrics-server is built-in but may need time to collect metrics
-# Wait 2-3 minutes after deployment
-
-# Verify metrics are available
-kubectl top pods
-```
-
-#### Issue: Database connection failed
-
-```bash
-# Check database pod status
-kubectl get pods -l app=inventory-db
-
-# Check database service
-kubectl get svc inventory-db
-
-# Test connection from app pod
-kubectl exec -it <inventory-app-pod> -- nc -zv inventory-db-0.inventory-db 5432
-```
-
-**Solution**:
-```bash
-# Verify StatefulSet DNS
-# Format: <pod-name>.<service-name>.<namespace>.svc.cluster.local
-# Example: inventory-db-0.inventory-db.default.svc.cluster.local
-
-# Check app environment variable
-kubectl exec <inventory-app-pod> -- env | grep DB_HOST
-```
-
-### Reset Cluster
-
-If everything goes wrong:
-
-```bash
-# Delete all resources
-./Scripts/orchestrator.sh delete
-
-# Recreate from scratch
-./Scripts/orchestrator.sh create
-```
-
-### Debug Mode
-
-```bash
-# SSH to master node
-vagrant ssh k3s-master
-
-# Check K3s status
-sudo systemctl status k3s
-
-# Check K3s logs
-sudo journalctl -u k3s -f
-
-# Check containerd
-sudo k3s crictl ps
-```
-
-## Kubernetes Concepts
-
-### Container Orchestration
-
-**Container orchestration** is the automated process of managing, deploying, scaling, and networking containers.
-
-**Benefits**:
-- Automated deployment and scaling
-- Load balancing
-- Self-healing (restart failed containers)
-- Service discovery
-- Configuration management
-- Storage orchestration
-
-### Kubernetes (K8s)
-
-**Kubernetes** is an open-source container orchestration platform for automating deployment, scaling, and management of containerized applications.
-
-**Main roles**:
-- Cluster management
-- Container scheduling
-- Service discovery and load balancing
-- Auto-scaling
-- Self-healing
-- Storage orchestration
-- Configuration and secret management
-
-### K3s
-
-**K3s** is a lightweight, certified Kubernetes distribution designed for IoT, edge, and resource-constrained environments.
-
-**Main roles**:
-- Simplified Kubernetes installation
-- Reduced memory footprint (~512MB vs 4GB for full K8s)
-- Single binary (<100MB)
-- Perfect for development and testing
-
-### Kubernetes Components
-
-#### Control Plane Components
-
-1. **kube-apiserver**: Frontend for Kubernetes API
-2. **etcd**: Key-value store for cluster data
-3. **kube-scheduler**: Assigns pods to nodes
-4. **kube-controller-manager**: Runs controller processes
-5. **cloud-controller-manager**: Links cluster to cloud provider APIs
-
-#### Node Components
-
-1. **kubelet**: Agent running on each node
-2. **kube-proxy**: Network proxy
-3. **container-runtime**: Docker/containerd/CRI-O
-
-### Infrastructure as Code (IaC)
-
-**Infrastructure as Code** is managing and provisioning infrastructure through machine-readable definition files.
-
-**Advantages**:
-- Version control
-- Reproducibility
-- Automation
-- Documentation
-- Collaboration
-- Disaster recovery
-
-### K8s Manifests
-
-**Kubernetes manifests** are YAML/JSON files that describe desired state of Kubernetes resources.
-
-**Components**:
-- **apiVersion**: API version
-- **kind**: Resource type (Pod, Service, Deployment, etc.)
-- **metadata**: Name, labels, annotations
-- **spec**: Desired state specification
-
-**Example**:
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: my-app
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: my-app
-  template:
-    metadata:
-      labels:
-        app: my-app
-    spec:
-      containers:
-      - name: app
-        image: myimage:latest
-```
-
-### Deployment vs StatefulSet
-
-#### Deployment
-
-**Purpose**: For stateless applications
-
-**Characteristics**:
-- Pods are interchangeable
-- No persistent identity
-- Can scale up/down freely
-- Rolling updates
-- Random pod names
-
-**Use cases**: Web servers, API services, stateless microservices
-
-#### StatefulSet
-
-**Purpose**: For stateful applications
-
-**Characteristics**:
-- Stable, unique network identities
-- Persistent storage
-- Ordered deployment and scaling
-- Stable pod names (app-0, app-1, ...)
-- Ordered updates
-
-**Use cases**: Databases, message queues, any app requiring persistent state
-
-**Why databases aren't deployments**:
-- Databases need persistent storage
-- Each instance needs stable network identity
-- Data must survive pod restarts
-- Ordered shutdown prevents data corruption
-
-### Scaling
-
-**Scaling** is adjusting the number of application instances to match load.
-
-**Types**:
-1. **Horizontal scaling** (scale out): Add more pods
-2. **Vertical scaling** (scale up): Increase CPU/memory per pod
-
-**Why we use it**:
-- Handle varying load
-- Ensure availability
-- Optimize resource usage
-- Cost efficiency
-- Performance improvement
-
-**Horizontal Pod Autoscaler (HPA)**:
-- Automatically scales pods based on CPU/memory
-- Min/max replicas defined
-- Checks metrics every 15s (default)
-
-### Load Balancer
-
-**A load balancer** distributes network traffic across multiple servers/pods.
-
-**Role**:
-- Distribute load evenly
-- Ensure high availability
-- Improve responsiveness
-- Prevent overload
-- Enable horizontal scaling
-
-**In Kubernetes**:
-- **ClusterIP**: Internal load balancing (default)
-- **NodePort**: Exposes service on each node's IP
-- **LoadBalancer**: Creates external load balancer (cloud)
-
-## Security
-
-### Best Practices
-
-1. **Secrets Management**
-   - Never commit secrets to Git
-   - Use Kubernetes Secrets
-   - Consider external secret managers (Vault, AWS Secrets Manager)
-
-2. **RBAC (Role-Based Access Control)**
-   - Principle of least privilege
-   - Separate service accounts per application
-
-3. **Network Policies**
-   - Restrict pod-to-pod communication
-   - Whitelist allowed traffic
-
-4. **Image Security**
-   - Use specific image tags (not `latest`)
-   - Scan images for vulnerabilities
-   - Use trusted registries
-
-5. **Resource Limits**
-   - Set CPU/memory requests and limits
-   - Prevent resource exhaustion
-
-### Security Checklist
-
-- [ ] Secrets stored in Kubernetes Secrets
-- [ ] Resource limits defined for all pods
-- [ ] Non-root containers where possible
-- [ ] Image tags specified (not `latest`)
-- [ ] Network policies configured
-- [ ] RBAC enabled
-- [ ] Audit logging enabled
-- [ ] Regular security updates
-
-## Contributing
-
-### Development Workflow
-
-1. Fork the repository
-2. Create a feature branch
-3. Make changes
-4. Test locally
-5. Submit pull request
-
-### Testing Before Commit
-
-```bash
-# Validate YAML syntax
-for f in Manifests/**/*.yaml; do
-  kubectl apply --dry-run=client -f $f
-done
-
-# Test deployment
-./Scripts/orchestrator.sh create
-./Scripts/orchestrator.sh status
+# Analyser les coûts
+aws ce get-cost-and-usage --time-period Start=2025-01-01,End=2025-01-31 --granularity MONTHLY --metrics BlendedCost
 ```
 
 ---
 
-## License
+## 📞 Support
 
-MIT License - See LICENSE file for details
-
-## Support
-
-For issues, questions, or contributions:
-- Open an issue on GitHub
-- Contact: your-email@example.com
-
-## Acknowledgments
-
-- Built on top of the [play-with-containers](../play-with-containers) Docker Compose solution
-- Uses Dockerfiles from the validated play-with-containers project
-- K3s: https://k3s.io/
-- Kubernetes: https://kubernetes.io/
+- **Email**: devops@example.com
+- **Slack**: #cloud-design
+- **On-call**: PagerDuty
+- **Documentation**: [Wiki interne](https://wiki.example.com/cloud-design)
 
 ---
 
-**Made with ❤️ for learning Kubernetes and DevOps**
+## 🤝 Contribution
+
+1. Fork le projet
+2. Créer une branche (`git checkout -b feature/amazing-feature`)
+3. Commit les changements (`git commit -m 'Add amazing feature'`)
+4. Push vers la branche (`git push origin feature/amazing-feature`)
+5. Ouvrir une Pull Request
+
+---
+
+## 📝 License
+
+MIT License - voir le fichier [LICENSE](LICENSE) pour plus de détails.
+
+---
+
+## 🏆 Auteurs
+
+- **Équipe DevOps** - *Initial work*
+- **Équipe Backend** - *Microservices*
+- **Équipe SRE** - *Monitoring & Reliability*
+
+---
+
+**Version**: 1.0.0
+**Dernière mise à jour**: 2025-12-19
