@@ -1,0 +1,154 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+# K3s Cluster Configuration
+K3S_VERSION = "v1.28.5+k3s1"
+MASTER_IP = "192.168.56.110"
+AGENT_IP = "192.168.56.111"
+POD_NETWORK = "10.42.0.0/16"
+SERVICE_NETWORK = "10.43.0.0/16"
+
+Vagrant.configure("2") do |config|
+  # Common configuration for all VMs
+  config.vm.box = "ubuntu/focal64"
+  config.vm.box_check_update = false
+
+  # SSH configuration
+  config.ssh.insert_key = false
+  config.ssh.forward_agent = true
+  config.vm.boot_timeout = 600  # Augmenter le timeout à 10 minutes
+
+  # VirtualBox provider settings
+  config.vm.provider "virtualbox" do |vb|
+    vb.cpus = 2
+    vb.memory = 2048
+    vb.linked_clone = true  # Plus rapide sur Windows
+    vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+    vb.customize ["modifyvm", :id, "--natdnsproxy1", "on"]
+    vb.customize ["modifyvm", :id, "--ioapic", "on"]
+    vb.customize ["modifyvm", :id, "--uart1", "0x3F8", "4"]
+    vb.customize ["modifyvm", :id, "--uartmode1", "file", File::NULL]
+  end
+
+  #=========================================
+  # K3s Master Node
+  #=========================================
+  config.vm.define "k3s-master", primary: true do |master|
+    master.vm.hostname = "k3s-master"
+    master.vm.network "private_network", ip: MASTER_IP
+
+    master.vm.provider "virtualbox" do |vb|
+      vb.name = "k3s-master"
+      vb.memory = 2048
+      vb.cpus = 2
+    end
+
+    master.vm.provision "shell", inline: <<-SHELL
+      set -e
+
+      echo "==> Updating system packages..."
+      apt-get update -qq
+      apt-get install -y curl wget net-tools
+
+      echo "==> Disabling swap..."
+      swapoff -a
+      sed -i '/swap/d' /etc/fstab
+
+      echo "==> Installing K3s master #{K3S_VERSION}..."
+      curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=#{K3S_VERSION} sh -s - server \
+        --bind-address=#{MASTER_IP} \
+        --advertise-address=#{MASTER_IP} \
+        --node-ip=#{MASTER_IP} \
+        --cluster-cidr=#{POD_NETWORK} \
+        --service-cidr=#{SERVICE_NETWORK} \
+        --flannel-iface=enp0s8 \
+        --write-kubeconfig-mode=644 \
+        --disable=traefik \
+        --disable=servicelb
+
+      echo "==> Waiting for K3s to be ready..."
+      until kubectl get nodes 2>/dev/null; do
+        echo "Waiting for K3s..."
+        sleep 5
+      done
+
+      echo "==> Getting node token for agents..."
+      cat /var/lib/rancher/k3s/server/node-token > /vagrant/.k3s-token
+
+      echo "==> Copying kubeconfig for local access..."
+      mkdir -p /vagrant/.kube
+      cp /etc/rancher/k3s/k3s.yaml /vagrant/.kube/config
+      sed -i "s/127.0.0.1/#{MASTER_IP}/g" /vagrant/.kube/config
+      chmod 644 /vagrant/.kube/config
+
+      echo "==> K3s master installation complete!"
+      kubectl get nodes
+    SHELL
+  end
+
+  #=========================================
+  # K3s Agent Node
+  #=========================================
+  config.vm.define "k3s-agent" do |agent|
+    agent.vm.hostname = "k3s-agent"
+    agent.vm.network "private_network", ip: AGENT_IP
+
+    agent.vm.provider "virtualbox" do |vb|
+      vb.name = "k3s-agent"
+      vb.memory = 2048
+      vb.cpus = 2
+    end
+
+    agent.vm.provision "shell", inline: <<-SHELL
+      set -e
+
+      echo "==> Updating system packages..."
+      apt-get update -qq
+      apt-get install -y curl wget net-tools
+
+      echo "==> Disabling swap..."
+      swapoff -a
+      sed -i '/swap/d' /etc/fstab
+
+      echo "==> Waiting for master token..."
+      until [ -f /vagrant/.k3s-token ]; do
+        echo "Waiting for master token..."
+        sleep 5
+      done
+
+      K3S_TOKEN=$(cat /vagrant/.k3s-token)
+      K3S_URL="https://#{MASTER_IP}:6443"
+
+      echo "==> Installing K3s agent #{K3S_VERSION}..."
+      curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=#{K3S_VERSION} K3S_URL=$K3S_URL K3S_TOKEN=$K3S_TOKEN sh -s - agent \
+        --node-ip=#{AGENT_IP} \
+        --flannel-iface=enp0s8
+
+      echo "==> K3s agent installation complete!"
+    SHELL
+  end
+
+  # Post-provisioning message
+  config.vm.post_up_message = <<-MESSAGE
+    ╔═══════════════════════════════════════════════════════════════╗
+    ║                K3s Cluster Deployment Complete                 ║
+    ╚═══════════════════════════════════════════════════════════════╝
+
+    Master Node:  #{MASTER_IP} (k3s-master)
+    Agent Node:   #{AGENT_IP} (k3s-agent)
+
+    Access your cluster:
+    1. On your host machine:
+       export KUBECONFIG=$(pwd)/.kube/config
+       kubectl get nodes
+
+    2. SSH to master:
+       vagrant ssh k3s-master
+       kubectl get nodes
+
+    3. Deploy the application:
+       ./Scripts/orchestrator.sh create
+
+    Happy Kubernetes orchestration! 🚀
+  MESSAGE
+end
